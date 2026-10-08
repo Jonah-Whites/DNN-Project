@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
 from PIL import Image
 
 def load_image(image_path, label):
@@ -17,7 +18,6 @@ def load_image(image_path, label):
 
     label = np.int32(label)
     return image, label
-
 
 def tf_load_image(image_path, label):
     image, label = tf.numpy_function(
@@ -49,6 +49,8 @@ def make_dataset(frame, batch=64, shuffle=False):
 
     return dataset.batch(batch).prefetch(tf.data.AUTOTUNE)
 
+USE_PRETRAINED = True
+
 base_path = "..\\..\\histopathologic-cancer-detection\\"
 df = pd.read_csv(base_path + "train_labels.csv")
 
@@ -62,36 +64,74 @@ train_df, validation_df = train_test_split(df, test_size=0.2, stratify=df["label
 train_dataset = make_dataset(train_df, shuffle=True)
 validation_dataset = make_dataset(validation_df)
 
-'''
-model = tf.keras.Sequential([
+mlp = tf.keras.Sequential([
     tf.keras.layers.Input(shape=(96, 96, 3)),
-
-    tf.keras.layers.Conv2D(32, (3, 3), activation="relu"),
-    tf.keras.layers.MaxPooling2D((2, 2)),
-
-    tf.keras.layers.Conv2D(64, (3, 3), activation="relu"),
-    tf.keras.layers.MaxPooling2D((2, 2)),
-
     tf.keras.layers.Flatten(),
-
-    tf.keras.layers.Dense(64, activation="relu"),
-    tf.keras.layers.Dense(1, activation="sigmoid")
+    tf.keras.layers.Dense(100, activation="relu"),
+    tf.keras.layers.Dense(100, activation="relu"),
+    tf.keras.layers.Dense(1, activation="sigmoid"),
 ])
 
-model.summary()
-
-model.compile(
+mlp.compile(
     optimizer="adam",
     loss="binary_crossentropy",
-    metrics=["accuracy", tf.keras.metrics.AUC(name="auc")]
+    metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
 )
 
-history = model.fit(train_dataset, validation_data=validation_dataset, epochs=5)
+history = mlp.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=5,
+    callbacks=[
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_auc", mode="max", patience=3, restore_best_weights=True
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_auc", mode="max", factor=0.5, patience=1
+        ),
+    ],
+)
 
-model.save("model.keras")
-'''
+mlp.save("mlp.keras")
 
-model = tf.keras.models.load_model("model.keras")
+y_true = validation_df["label"].values
+y_prob = mlp.predict(validation_dataset).ravel()
+print(roc_auc_score(y_true, y_prob))
+
+if USE_PRETRAINED:
+    model = tf.keras.models.load_model("model.keras")
+else:
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(96, 96, 3)),
+
+        tf.keras.layers.Conv2D(32, (3, 3), activation="relu"),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+
+        tf.keras.layers.Conv2D(64, (3, 3), activation="relu"),
+        tf.keras.layers.MaxPooling2D((2, 2)),
+
+        tf.keras.layers.Flatten(),
+
+        tf.keras.layers.Dense(64, activation="relu"),
+        tf.keras.layers.Dense(1, activation="sigmoid")
+    ])
+
+    model.summary()
+
+    model.compile(
+        optimizer="adam",
+        loss="binary_crossentropy",
+        metrics=["accuracy", tf.keras.metrics.AUC(name="auc")]
+    )
+
+    history = model.fit(train_dataset, validation_data=validation_dataset, epochs=5)
+
+    model.save("model.keras")
+
+print(model.evaluate(validation_dataset, return_dict=True))
+y_true = validation_df["label"].values
+y_prob = model.predict(validation_dataset).ravel()
+print(roc_auc_score(y_true, y_prob))
 
 test_labels = pd.read_csv(base_path + "sample_submission.csv")
 test_labels["image_path"] = test_path + test_labels["id"] + ".tif"
