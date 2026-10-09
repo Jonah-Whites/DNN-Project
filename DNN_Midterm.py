@@ -9,6 +9,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 from PIL import Image
 
+
+#Current method of loading and normallizing the image using Pillow
 def load_image(image_path, label):
     image_path = image_path.decode()
 
@@ -31,6 +33,7 @@ def tf_load_image(image_path, label):
 
     return image, label
 
+#Creates the Dataset for training and testing
 def make_dataset(frame, batch=64, shuffle=False):
     dataset = tf.data.Dataset.from_tensor_slices(
         (
@@ -49,55 +52,64 @@ def make_dataset(frame, batch=64, shuffle=False):
 
     return dataset.batch(batch).prefetch(tf.data.AUTOTUNE)
 
+#Boolean variable to either train in runtime or load models
 USE_PRETRAINED = True
 
+#Base path is indicating where the files are, change as necessary for your data location
 base_path = "..\\..\\histopathologic-cancer-detection\\"
 df = pd.read_csv(base_path + "train_labels.csv")
 
 train_path = base_path + "train\\"
 test_path = base_path + "test\\"
 
+#Allows DataFrame to have an easily accessible path for all .tif files
 df["image_path"] = train_path + df["id"] + ".tif"
 
+#Splitting with random state set
 train_df, validation_df = train_test_split(df, test_size=0.2, stratify=df["label"], random_state=42)
 
 train_dataset = make_dataset(train_df, shuffle=True)
 validation_dataset = make_dataset(validation_df)
 
-mlp = tf.keras.Sequential([
-    tf.keras.layers.Input(shape=(96, 96, 3)),
-    tf.keras.layers.Flatten(),
-    tf.keras.layers.Dense(100, activation="relu"),
-    tf.keras.layers.Dense(100, activation="relu"),
-    tf.keras.layers.Dense(1, activation="sigmoid"),
-])
+#Linear
+if USE_PRETRAINED:
+        mlp = tf.keras.models.load_model("mlp.keras")
+else:
+    mlp = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(96, 96, 3)),
+        tf.keras.layers.Flatten(),
+        tf.keras.layers.Dense(100, activation="relu"),
+        tf.keras.layers.Dense(100, activation="relu"),
+        tf.keras.layers.Dense(1, activation="sigmoid"),
+    ])
 
-mlp.compile(
-    optimizer="adam",
-    loss="binary_crossentropy",
-    metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
-)
+    mlp.compile(
+        optimizer="adam",
+        loss="binary_crossentropy",
+        metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
+    )
 
-history = mlp.fit(
-    train_dataset,
-    validation_data=validation_dataset,
-    epochs=5,
-    callbacks=[
-        tf.keras.callbacks.EarlyStopping(
-            monitor="val_auc", mode="max", patience=3, restore_best_weights=True
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_auc", mode="max", factor=0.5, patience=1
-        ),
-    ],
-)
+    history = mlp.fit(
+        train_dataset,
+        validation_data=validation_dataset,
+        epochs=5,
+        callbacks=[
+            tf.keras.callbacks.EarlyStopping(
+                monitor="val_auc", mode="max", patience=3, restore_best_weights=True
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor="val_auc", mode="max", factor=0.5, patience=1
+            ),
+        ],
+    )
 
-mlp.save("mlp.keras")
+    mlp.save("mlp.keras")
 
 y_true = validation_df["label"].values
 y_prob = mlp.predict(validation_dataset).ravel()
-print(roc_auc_score(y_true, y_prob))
+print("Linear AUC: ", roc_auc_score(y_true, y_prob))
 
+#CNN
 if USE_PRETRAINED:
     model = tf.keras.models.load_model("model.keras")
 else:
@@ -131,8 +143,9 @@ else:
 print(model.evaluate(validation_dataset, return_dict=True))
 y_true = validation_df["label"].values
 y_prob = model.predict(validation_dataset).ravel()
-print(roc_auc_score(y_true, y_prob))
+print("CNN AUC: ", roc_auc_score(y_true, y_prob))
 
+#Testing and Result Exporting
 test_labels = pd.read_csv(base_path + "sample_submission.csv")
 test_labels["image_path"] = test_path + test_labels["id"] + ".tif"
 test_labels["label"] = 0
